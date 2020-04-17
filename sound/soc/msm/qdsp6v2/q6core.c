@@ -365,8 +365,6 @@ int q6core_get_avcs_fwk_ver_info(uint32_t service_id,
 				 struct avcs_fwk_ver_info *ver_info)
 {
 	int ret;
-	unsigned long timeout;
-	bool adsp_ready = false;
 
 	mutex_lock(&(q6core_lcl.ver_lock));
 	pr_debug("%s: q6core_avcs_ver_info.status(%d)\n",
@@ -380,26 +378,13 @@ int q6core_get_avcs_fwk_ver_info(uint32_t service_id,
 		ret = -ENOSYS;
 		break;
 	case VER_QUERY_UNATTEMPTED:
-		if (!q6core_is_adsp_ready()) {
-			pr_debug("ADSP isn't ready retry\n");
-			timeout = jiffies +
-				  msecs_to_jiffies(2 * Q6_READY_TIMEOUT_MS);
-			while (!time_after(jiffies, timeout)) {
-				if (!q6core_is_adsp_ready()) {
-					pr_debug("%s: ADSP is not ready to query version\n",
-						 __func__);
-				} else {
-					adsp_ready = true;
-					break;
-				}
-			}
-		} else {
-			adsp_ready = true;
-		}
-		if (adsp_ready == true)
+		if (q6core_is_adsp_ready()) {
 			ret = q6core_send_get_avcs_fwk_ver_cmd();
-		else
+		} else {
+			pr_err("%s: ADSP is not ready to query version\n",
+				 __func__);
 			ret = -ENODEV;
+		}
 		break;
 	default:
 		pr_err("%s: Invalid version query status %d\n",
@@ -644,7 +629,7 @@ uint32_t core_set_dolby_manufacturer_id(int manufacturer_id)
 
 bool q6core_is_adsp_ready(void)
 {
-	int rc;
+	int rc = 0;
 	bool ret = false;
 	struct apr_hdr hdr;
 
@@ -656,21 +641,23 @@ bool q6core_is_adsp_ready(void)
 	hdr.opcode = AVCS_CMD_ADSP_EVENT_GET_STATE;
 
 	ocm_core_open();
-	q6core_lcl.bus_bw_resp_received = 0;
-	rc = apr_send_pkt(q6core_lcl.core_handle_q, (uint32_t *)&hdr);
-	if (rc < 0) {
-		pr_err_ratelimited("%s: Get ADSP state APR packet send event %d\n",
-			__func__, rc);
-		goto bail;
-	}
+	if (q6core_lcl.core_handle_q) {
+		q6core_lcl.bus_bw_resp_received = 0;
+		rc = apr_send_pkt(q6core_lcl.core_handle_q, (uint32_t *)&hdr);
+		if (rc < 0) {
+		    pr_err_ratelimited("%s: Get ADSP state APR packet send event %d\n",
+				__func__, rc);
+			goto bail;
+		}
 
-	rc = wait_event_timeout(q6core_lcl.bus_bw_req_wait,
-				(q6core_lcl.bus_bw_resp_received == 1),
-				msecs_to_jiffies(Q6_READY_TIMEOUT_MS));
-	if (rc > 0 && q6core_lcl.bus_bw_resp_received) {
-		/* ensure to read updated param by callback thread */
-		rmb();
-		ret = !!q6core_lcl.param;
+		rc = wait_event_timeout(q6core_lcl.bus_bw_req_wait,
+					(q6core_lcl.bus_bw_resp_received == 1),
+					msecs_to_jiffies(Q6_READY_TIMEOUT_MS));
+		if (rc > 0 && q6core_lcl.bus_bw_resp_received) {
+			/* ensure to read updated param by callback thread */
+			rmb();
+			ret = !!q6core_lcl.param;
+		}
 	}
 bail:
 	pr_debug("%s: leave, rc %d, adsp ready %d\n", __func__, rc, ret);
